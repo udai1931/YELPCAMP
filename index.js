@@ -1,55 +1,66 @@
-var express = require("express");
-var app = express();
-var bodyParser = require("body-parser");
-var mongoose = require("mongoose");
+var express       = require("express");
+var app           = express();
+var bodyParser    = require("body-parser");
+var mongoose      = require("mongoose");
+var passport      = require("passport");
+var LocalStrategy = require("passport-local");
+var Campground    = require("./models/campground");
+var seedDB        = require("./seed.js");
+var Comment       = require("./models/comment");
+var User          = require("./models/user");
 
 mongoose.connect("mongodb://localhost/yelp_camp",{useNewUrlParser : true});
+mongoose.set('useUnifiedTopology',true);
 app.use(bodyParser.urlencoded({extended: true}));
 app.set("view engine","ejs"); 
+app.use(express.static(__dirname + "/public"));
+//SEEDING DATA
+seedDB();
 
-//Schema Setup
-var campgroundSchema = new mongoose.Schema({
-    name : String,
-    image : String,
-    description : String
-});
+//PASSPORT CONFIGURATION
+app.use(require("express-session")({
+    secret : "It is used in hashing the password",
+    resave : false,
+    saveUninitialized: false
+}));
+app.use(passport.initialize());
+app.use(passport.session());
+passport.use(new LocalStrategy(User.authenticate()));
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
+app.use(function(req,res,next){
+    res.locals.currentUser = req.user;
+    next();
+})
 
-var Campground = mongoose.model("Campground",campgroundSchema);
 
-// Campground.create(
-//     {name:"Taj Mahal", image : "https://images.unsplash.com/photo-1524492412937-b28074a5d7da?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&w=1000&q=80"},
-//     {name:"Eiffel Tower", image : "https://media.tacdn.com/media/attractions-splice-spp-674x446/06/74/ab/3e.jpg"},function(err, campground){
-//         if(err)
-//             console.log(err)
-//         else
-//          {   console.log("New Created Campground");
-//             console.log(campground);}
-//     });  
-
-// var campgrounds = [
-//     {name:"India Gate", image : "https://cdn.britannica.com/38/189838-050-83C7395E/India-War-Memorial-arch-New-Delhi-Sir.jpg"},
-//     {name:"Taj Mahal", image : "https://images.unsplash.com/photo-1524492412937-b28074a5d7da?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&w=1000&q=80"},
-//     {name:"Eiffel Tower", image : "https://media.tacdn.com/media/attractions-splice-spp-674x446/06/74/ab/3e.jpg"}
-// ]
+function isLoggedIn(req, res, next){
+    if(req.isAuthenticated()){
+        return next();
+    }
+    res.redirect("/login");
+}
 
 app.get("/",function(req,res){
 	res.render("landing" );
 })
 
 app.get("/campgrounds", function(req , res){
+    //console.log(req.user);
     Campground.find({}, function(err,allCampgrounds){
         if(err){
             console.log(err);
         }
         else
-            res.render("index.ejs",{campgrounds:allCampgrounds});
+            res.render("campgrounds/index.ejs",{campgrounds:allCampgrounds, currentUser : req.user});
     });
 });
 
 app.post("/campgrounds",function(req,res){
     var name = req.body.name;
     var image = req.body.image;
-    var newCampground = {name:name,image:image}
+    var description = req.body.description
+    var newCampground = {name:name,image:image,description:description}
     Campground.create(newCampground , function(err, newlyupdated){
         if(err)
             console.log(err);
@@ -63,19 +74,104 @@ app.post("/campgrounds",function(req,res){
 });
 
 app.get("/campgrounds/new",function(req , res){
-	res.render("new.ejs")
+	res.render("campgrounds/new.ejs")
 })
 
 //SHOW
 app.get("/campgrounds/:id", function(req,res){
-    Campground.findById(req.params.id, function(err, foundCampground){
+    Campground.findById(req.params.id).populate("comments").exec(function(err, foundCampground){
         if(err)
             console.log(err);
         else
-            res.render("show.ejs",{campground: foundCampground});
+            res.render("campgrounds/show.ejs",{campground : foundCampground});
     });
-    res.render("show.ejs");
+    //res.render("show.ejs");
 });
+
+
+//======================
+//COMMENTS ROUTESS
+//======================
+
+app.get("/campgrounds/:id/comments/new", isLoggedIn ,function(req,res){
+    Campground.findById(req.params.id, function(err,campground){
+    if(err)
+    console.log(err);
+    else{
+         res.render("comments/new",{campground:campground});   
+    }    
+    })
+});
+
+app.post("/campgrounds/:id/comments%3E",isLoggedIn , function(req, res){
+    Campground.findById(req.params.id, function(err, campground){
+        if(err){
+            console.log(err);
+            res.redirect("/campgrounds");
+        }
+        else{
+            /*var text = req.body.text;
+            var author = req.body.author;
+            var newComment = {text:text,author:author};*/
+            Comment.create(req.body.comment , function(err, comment){
+                if(err){
+                    console.log(err);
+                }
+                else{
+                    campground.comments.push(comment);
+                    campground.save();
+                    res.redirect('/campgrounds/'+campground._id);
+                }
+            });
+        }
+    })    
+});
+
+//AUTH ROUTES
+
+//register form
+app.get("/register",function(req,res){
+    res.render("register");
+});
+
+app.post("/register",function(req,res){
+    var newUser = new User({username:req.body.username});
+    User.register(newUser, req.body.password, function(err, user){
+        if(err){
+            console.log(err);
+            return res.render("register");
+        }
+        passport.authenticate("local")(req,res,function(){
+            res.redirect("/campgrounds");
+        }
+        );
+    });
+});
+
+//login
+app.get("/login",function(req,res){
+    res.render("login");
+});
+
+app.post("/login",passport.authenticate("local",
+    {
+        successRedirect : "/campgrounds",
+        failureRedirect : "/login"
+    }),function(req,res){
+});
+
+//logout
+app.get("/logout",function(req,res){
+    req.logout();
+    res.redirect("/campgrounds");
+});
+
+function isloggedIn(req, res, next){
+    if(req.isAuthenticated()){
+        return next();
+    }
+    res.redirect("/login");
+}
 
 app.listen(3000,function(){
 	console.log("Project Server is Started at 3000...");
